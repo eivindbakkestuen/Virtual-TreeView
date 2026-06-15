@@ -20,7 +20,7 @@ uses
 
 const
   VTTreeStreamVersion      = 3;
-  VTHeaderStreamVersion    = 6;    // The header needs an own stream version to indicate changes only relevant to the header.
+  VTHeaderStreamVersion    = 7;    // The header needs an own stream version to indicate changes only relevant to the header.
 
   CacheThreshold           = 2000; // Number of nodes a tree must at least have to start caching and at the same
                                    // time the maximum number of nodes between two cache entries.
@@ -662,6 +662,15 @@ type
     hpeOverlay
   );
 
+  // These elements are used both to query the application, which of them it wants to draw itself and to tell it during
+  // painting, which elements must be drawn during the advanced footer painting.
+  TVTFooterPaintElements = set of (
+    fpeBackground,
+    fpeFooterGlyph,
+    fpeText,
+    fpeOverlay      // Use this in OnFooterDrawQueryElements and OnAdvancedFooterDraw for additional custom drawing.
+  );
+
   // determines whether and how the drag image is to show
   TVTDragImageKind = (
     diComplete,       // show a complete drag image with all columns, only visible columns are shown
@@ -1065,6 +1074,15 @@ type
     hoAutoResizeInclCaption         //Includes the header caption for the auto resizing
     );
   TVTHeaderOptions = set of TVTHeaderOption;
+
+  TVTFooterOption = (
+    foVisible,                      //Footer is visible.
+    foShowImages,                   //Show footer images (uses the footer's image list).
+    foHotTrack,                     //Footer cells are highlighted when the mouse is over a particular column.
+    foOwnerDraw,                    //Footer cells can be drawn by the application via the advanced footer draw event.
+    foShowButtonBorder              //Draw a vertical separator line on the right edge of each footer cell.
+    );
+  TVTFooterOptions = set of TVTFooterOption;
 
   THeaderState = (
     hsAutoSizing,                   //auto size chain is in progess, do not trigger again on WM_SIZE

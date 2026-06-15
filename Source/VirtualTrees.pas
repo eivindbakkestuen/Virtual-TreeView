@@ -404,6 +404,7 @@ type
     property Enabled;
     property Font;
     property Header;
+    property Footer;
     property HintMode;
     property HotCursor;
     property Images;
@@ -441,6 +442,11 @@ type
 
     property OnAddToSelection;
     property OnAdvancedHeaderDraw;
+    property OnAdvancedFooterDraw;
+    property OnFooterClick;
+    property OnFooterDraw;
+    property OnFooterDrawQueryElements;
+    property OnGetFooterText;
     property OnAfterAutoFitColumn;
     property OnAfterAutoFitColumns;
     property OnAfterCellPaint;

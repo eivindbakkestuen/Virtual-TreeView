@@ -52,6 +52,19 @@ type
     procedure DrawDropMark();
   end;
 
+  // This structure carries all important information about footer painting and is used in the advanced footer painting.
+  TVTFooterPaintInfo = record
+    TargetCanvas : TCanvas;
+    Column : TVirtualTreeColumn;
+    PaintRectangle : TRect;
+    TextRectangle : TRect;
+    IsHoverIndex,
+      IsEnabled,
+      ShowFooterGlyph,
+      ShowRightBorder : Boolean;
+    GlyphPos : TPoint;
+  end;
+
   TVirtualTreeColumns = class;
 
   TVirtualTreeColumn = class(TCollectionItem)
@@ -61,6 +74,7 @@ type
   private
     FText,
       FHint               : string;
+    FFooterText           : string;       // Static footer cell text; DoGetFooterText uses it as the default and OnGetFooterText may override it.
     FWidth                : TDimension;
     FPosition             : TColumnPosition;
     FMinWidth             : TDimension;
@@ -120,6 +134,7 @@ type
     function GetDisplayName : string; override;
     function GetText : string; virtual;                   // [IPK]
     procedure SetText(const Value : string); virtual;     // [IPK] private to protected & virtual
+    procedure SetFooterText(const Value : string);
     function GetOwner : TVirtualTreeColumns; reintroduce;
     procedure InternalSetWidth(const Value : TDimension); //bypass side effects in SetWidth
     procedure ReadHint(Reader : TReader);
@@ -174,6 +189,7 @@ type
     property Style                : TVirtualTreeColumnStyle read FStyle write SetStyle default vsText;
     property Tag                  : NativeInt read FTag write FTag default 0;
     property Text                 : string read GetText write SetText;
+    property FooterText           : string read FFooterText write SetFooterText;
     property Width                : TDimension read FWidth write SetWidth default 50;
   end;
 
@@ -187,6 +203,7 @@ type
   private
     FHeader           : TVTHeader;
     FHeaderBitmap     : TBitmap;      // backbuffer for drawing
+    FFooterBitmap     : TBitmap;      // backbuffer for drawing the footer band
     FHoverIndex,                      // currently "hot" column
     FDownIndex,                       // Column on which a mouse button is held down.
     FTrackIndex       : TColumnIndex; // Index of column which is currently being resized.
@@ -270,6 +287,9 @@ type
     procedure PaintHeader(DC : HDC; R : TRect; HOffset : TDimension); overload; virtual;
     procedure PaintHeader(TargetCanvas : TCanvas; R : TRect; const Target : TPoint;
       RTLOffset : TDimension = 0); overload; virtual;
+    procedure PaintFooter(DC : HDC; R : TRect; HOffset : TDimension); overload; virtual;
+    procedure PaintFooter(TargetCanvas : TCanvas; R : TRect; const Target : TPoint;
+      RTLOffset : TDimension = 0); overload; virtual;
     procedure SaveToStream(const Stream : TStream);
     procedure EndUpdate(); override;
     function TotalWidth : TDimension;
@@ -319,6 +339,7 @@ type
     FHeight                      : TDimension;
     FFont                        : TFont;
     FParentFont                  : Boolean;
+    FUpdatingFont                : Boolean;        // True while applying the parent font, so FontChanged must not clear FParentFont
     FOptions                     : TVTHeaderOptions;
     FStyle                       : TVTHeaderStyle; //button style
     FBackgroundColor             : TColor;
@@ -453,6 +474,57 @@ type
 
   TVTHeaderClass = class of TVTHeader;
 
+  // The footer is a band at the bottom of the tree which mirrors the header: it shows one cell per (header) column,
+  // aligned to and horizontally scrolled in sync with the columns. It does not own columns; it reuses the header's
+  // columns for all geometry. Like the header it lives in the non-client area of the owner tree.
+  TVTFooter = class(TPersistent)
+  private
+    FOwner           : TCustomControl;
+    FHeight          : TDimension;
+    FFont            : TFont;
+    FParentFont      : Boolean;
+    FUpdatingFont    : Boolean;                 // True while applying the parent font, so FontChanged must not clear FParentFont
+    FOptions         : TVTFooterOptions;
+    FBackgroundColor : TColor;
+    FImages          : TCustomImageList;
+    FImageChangeLink : TChangeLink;             // connection to the image list to get notified about changes
+    FHoverColumn     : TColumnIndex;            // the column the mouse currently hovers over (only used for foHotTrack)
+    function IsFontStored : Boolean;
+    procedure SetBackground(Value : TColor);
+    procedure SetFont(const Value : TFont);
+    procedure SetHeight(Value : TDimension);
+    procedure SetImages(const Value : TCustomImageList);
+    procedure SetOptions(Value : TVTFooterOptions);
+    procedure SetParentFont(Value : Boolean);
+  protected
+    procedure AutoScale; virtual;
+    procedure ChangeScale(M, D : TDimension); virtual;
+    procedure FontChanged(Sender : TObject); virtual;
+    function GetOwner : TPersistent; override;
+    function HandleMessage(var Message : TMessage) : Boolean; virtual;
+    procedure ImageListChange(Sender : TObject);
+    procedure RecalculateFooter; virtual;
+  public
+    constructor Create(AOwner : TCustomControl); virtual;
+    destructor Destroy; override;
+
+    procedure Assign(Source : TPersistent); override;
+    function InFooter(P : TPoint) : Boolean; virtual;
+    procedure Invalidate(Column : TVirtualTreeColumn = nil);
+
+    property HoverColumn : TColumnIndex read FHoverColumn;
+    property Treeview : TCustomControl read FOwner;
+  published
+    property Background : TColor read FBackgroundColor write SetBackground default clBtnFace;
+    property Font       : TFont read FFont write SetFont stored IsFontStored;
+    property Height     : TDimension read FHeight write SetHeight default 19;
+    property Images     : TCustomImageList read FImages write SetImages;
+    property Options    : TVTFooterOptions read FOptions write SetOptions default [];
+    property ParentFont : Boolean read FParentFont write SetParentFont default True;
+  end;
+
+  TVTFooterClass = class of TVTFooter;
+
 implementation
 
 uses
@@ -477,6 +549,11 @@ type
   TBaseVirtualTreeCracker = class(TBaseVirtualTree);
 
   TVTHeaderHelper = class helper for TVTHeader
+  public
+    function Tree : TBaseVirtualTreeCracker;
+  end;
+
+  TVTFooterHelper = class helper for TVTFooter
   public
     function Tree : TBaseVirtualTreeCracker;
   end;
@@ -624,6 +701,11 @@ end;
 procedure TVTHeader.FontChanged(Sender : TObject);
 begin
   inherited;
+  // Changing any font property (e.g. via the Object Inspector's Font sub-properties) means the font no longer follows
+  // the parent, so clear ParentFont - exactly like TControl.Font/ParentFont. Skip this while the parent font is being
+  // applied (FUpdatingFont) or while loading from the DFM, where the stored ParentFont value is authoritative.
+  if not (FUpdatingFont or (csLoading in FOwner.ComponentState)) then
+    FParentFont := False;
   AutoScale();
 end;
 
@@ -882,7 +964,14 @@ begin
   begin
     FParentFont := Value;
     if FParentFont then
-      FFont.Assign(TBaseVirtualTree(FOwner).Font);
+    begin
+      FUpdatingFont := True;
+      try
+        FFont.Assign(TBaseVirtualTree(FOwner).Font);
+      finally
+        FUpdatingFont := False;
+      end;
+    end;
   end;
 end;
 
@@ -1507,7 +1596,14 @@ begin
       end;
     CM_PARENTFONTCHANGED :
       if FParentFont then
-        FFont.Assign(TBaseVirtualTreeCracker(FOwner).Font);
+      begin
+        FUpdatingFont := True;
+        try
+          FFont.Assign(TBaseVirtualTreeCracker(FOwner).Font);
+        finally
+          FUpdatingFont := False;
+        end;
+      end;
     CM_BIDIMODECHANGED :
       for I := 0 to FColumns.Count - 1 do
         if coParentBiDiMode in FColumns[I].Options then
@@ -2863,6 +2959,379 @@ begin
   Result := TBaseVirtualTreeCracker(Self.FOwner);
 end;
 
+function TVTFooterHelper.Tree : TBaseVirtualTreeCracker;
+begin
+  Result := TBaseVirtualTreeCracker(Self.FOwner);
+end;
+
+
+//----------------- TVTFooter ------------------------------------------------------------------------------------------
+
+constructor TVTFooter.Create(AOwner : TCustomControl);
+
+begin
+  inherited Create;
+  FOwner := AOwner;
+  FHeight := 19; // same default as the header, so turning on foVisible alone shows a usable band
+  FFont := TFont.Create;
+  FFont.OnChange := FontChanged;
+  FParentFont := True;
+  FBackgroundColor := clBtnFace;
+  FOptions := [];
+
+  FImageChangeLink := TChangeLink.Create;
+  FImageChangeLink.OnChange := ImageListChange;
+
+  FHoverColumn := NoColumn;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+destructor TVTFooter.Destroy;
+
+begin
+  if Assigned(FImages) then
+    FImages.UnRegisterChanges(FImageChangeLink);
+  FImageChangeLink.Free;
+  FFont.Free;
+  inherited;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.Assign(Source : TPersistent);
+
+begin
+  if Source is TVTFooter then
+  begin
+    Background := TVTFooter(Source).Background;
+    Font := TVTFooter(Source).Font;
+    Height := TVTFooter(Source).Height;
+    Images := TVTFooter(Source).Images;
+    Options := TVTFooter(Source).Options;
+    ParentFont := TVTFooter(Source).ParentFont;
+  end
+  else
+    inherited;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.AutoScale;
+
+//Adjusts the footer height to fit the footer font, using the same calculation as the header (TVTHeader.AutoScale).
+//Because the footer font defaults to the same (parent) font as the header, a freshly dropped footer ends up with the
+//same height as the header. Only executed when toAutoChangeScale is set, just like the header.
+
+var
+  I          : Integer;
+  lMaxHeight : TDimension;
+
+begin
+  if (toAutoChangeScale in Tree.TreeOptions.AutoOptions) then
+  begin
+    //First find the largest Columns[].Spacing (the footer reuses the header's columns).
+    lMaxHeight := 0;
+    for I := 0 to Tree.Header.Columns.Count - 1 do
+      lMaxHeight := Max(lMaxHeight, Tree.Header.Columns[I].Spacing);
+    //Calculate the required height based on the footer font.
+    with TBitmap.Create do
+      try
+        Canvas.Font.Assign(FFont);
+        lMaxHeight := lMaxHeight { top spacing } + Divide(lMaxHeight, 2) { minimum bottom spacing } + Canvas.TextHeight('Q');
+      finally
+        Free;
+      end;
+    Self.SetHeight(lMaxHeight);
+  end;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.ChangeScale(M, D : TDimension);
+
+begin
+  //This method is only executed if toAutoChangeScale is set
+  Self.Height := MulDiv(FHeight, M, D);
+  if not ParentFont then
+    Font.Height := MulDiv(Font.Height, M, D);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.FontChanged(Sender : TObject);
+
+begin
+  // Changing any font property (e.g. via the Object Inspector's Font sub-properties) means the font no longer follows
+  // the parent, so clear ParentFont - exactly like TControl.Font/ParentFont. Skip this while the parent font is being
+  // applied (FUpdatingFont) or while loading from the DFM, where the stored ParentFont value is authoritative.
+  if not (FUpdatingFont or (csLoading in FOwner.ComponentState)) then
+    FParentFont := False;
+  AutoScale();
+  Invalidate(nil);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+function TVTFooter.GetOwner : TPersistent;
+
+begin
+  Result := FOwner;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+function TVTFooter.HandleMessage(var Message : TMessage) : Boolean;
+
+//The footer gets here the opportunity to handle (client) mouse messages before they reach the tree. The footer is a
+//strip at the bottom of the client area, so it deals with ordinary client mouse messages - not the non-client ones the
+//header uses. It only needs click and (optional) hot-track handling, no drag/resize/splitter logic.
+
+var
+  P      : TPoint;
+  Column : TColumnIndex;
+  Button : TMouseButton;
+
+  function ShiftState : TShiftState;
+  begin
+    Result := [];
+    if GetKeyState(VK_SHIFT) < 0 then
+      Include(Result, ssShift);
+    if GetKeyState(VK_CONTROL) < 0 then
+      Include(Result, ssCtrl);
+    if GetKeyState(VK_MENU) < 0 then
+      Include(Result, ssAlt);
+  end;
+
+begin
+  Result := False;
+
+  //Keep the footer font in sync with the tree font when ParentFont is set (works even while the footer is hidden).
+  if (Message.Msg = CM_PARENTFONTCHANGED) and FParentFont then
+  begin
+    FUpdatingFont := True;
+    try
+      FFont.Assign(TBaseVirtualTreeCracker(FOwner).Font);
+    finally
+      FUpdatingFont := False;
+    end;
+    Exit;
+  end;
+
+
+  if not (foVisible in FOptions) then
+    Exit;
+
+  case Message.Msg of
+    WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN,
+    WM_LBUTTONDBLCLK, WM_RBUTTONDBLCLK, WM_MBUTTONDBLCLK :
+      begin
+        //Client mouse messages carry client coordinates in the lParam.
+        P := Point(TWMMouse(Message).XPos, TWMMouse(Message).YPos);
+        if InFooter(P) then
+        begin
+          Column := Tree.Header.Columns.ColumnFromPosition(Point(P.X, 0));
+          case Message.Msg of
+            WM_RBUTTONDOWN, WM_RBUTTONDBLCLK :
+              Button := TMouseButton.mbRight;
+            WM_MBUTTONDOWN, WM_MBUTTONDBLCLK :
+              Button := TMouseButton.mbMiddle;
+          else
+            Button := TMouseButton.mbLeft;
+          end;
+          Tree.DoFooterClick(Column, Button, ShiftState, P.X, P.Y);
+          //Consume the click so the tree does not treat it as a node click / start a selection or drag.
+          Result := True;
+        end;
+      end;
+    WM_MOUSEMOVE :
+      if foHotTrack in FOptions then
+      begin
+        P := Point(TWMMouseMove(Message).XPos, TWMMouseMove(Message).YPos);
+        if InFooter(P) then
+          Column := Tree.Header.Columns.ColumnFromPosition(Point(P.X, 0))
+        else
+          Column := NoColumn;
+        if Column <> FHoverColumn then
+        begin
+          FHoverColumn := Column;
+          Invalidate(nil);
+        end;
+        //Do not consume: the tree still needs the mouse-move (e.g. to clear its own hot node).
+      end;
+    CM_MOUSELEAVE :
+      if (foHotTrack in FOptions) and (FHoverColumn <> NoColumn) then
+      begin
+        FHoverColumn := NoColumn;
+        Invalidate(nil);
+      end;
+  end;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.ImageListChange(Sender : TObject);
+
+begin
+  Invalidate(nil);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+function TVTFooter.InFooter(P : TPoint) : Boolean;
+
+//Determines whether the given point (client coordinates) is within the footer strip (which is also expressed in
+//client coordinates now that the footer is a strip at the bottom of the client area).
+
+begin
+  Result := PtInRect(Tree.FooterRect, P);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.Invalidate(Column : TVirtualTreeColumn);
+
+//The footer is a strip at the bottom of the client area; invalidate it so it gets repainted on the next WM_PAINT.
+//(Column is currently unused - the whole strip is repainted - but kept for API symmetry with the header.)
+
+var
+  R : TRect;
+
+begin
+  if (foVisible in FOptions) and Tree.HandleAllocated then
+  begin
+    R := Tree.FooterRect;
+    Winapi.Windows.InvalidateRect(Tree.Handle, @R, False);
+  end;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.RecalculateFooter;
+
+//The footer is a strip at the bottom of the CLIENT area, so changing its height or visibility changes how much
+//vertical room is left for the rows (ContentHeight). Recompute the scrollbars and repaint - no non-client frame
+//change is needed (unlike the header).
+
+begin
+  if Tree.HandleAllocated then
+  begin
+    Tree.UpdateScrollBars(True);
+    Tree.Invalidate;
+  end;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.SetBackground(Value : TColor);
+
+begin
+  if FBackgroundColor <> Value then
+  begin
+    FBackgroundColor := Value;
+    Invalidate(nil);
+  end;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.SetFont(const Value : TFont);
+
+begin
+  FFont.Assign(Value);
+  FParentFont := False;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.SetHeight(Value : TDimension);
+
+begin
+  if Value < 0 then
+    Value := 0;
+  if FHeight <> Value then
+  begin
+    FHeight := Value;
+    if not (csLoading in Tree.ComponentState) then
+      RecalculateFooter;
+    Tree.Invalidate;
+  end;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.SetImages(const Value : TCustomImageList);
+
+begin
+  if FImages <> Value then
+  begin
+    if Assigned(FImages) then
+    begin
+      FImages.UnRegisterChanges(FImageChangeLink);
+      FImages.RemoveFreeNotification(FOwner);
+    end;
+    FImages := Value;
+    if Assigned(FImages) then
+    begin
+      FImages.RegisterChanges(FImageChangeLink);
+      FImages.FreeNotification(FOwner);
+    end;
+    if not (csLoading in Tree.ComponentState) then
+      Invalidate(nil);
+  end;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.SetOptions(Value : TVTFooterOptions);
+
+var
+  ToBeSet, ToBeCleared : TVTFooterOptions;
+
+begin
+  ToBeSet := Value - FOptions;
+  ToBeCleared := FOptions - Value;
+  if (ToBeSet = []) and (ToBeCleared = []) then
+    Exit;
+  FOptions := Value;
+
+  if not (csLoading in Tree.ComponentState) and Tree.HandleAllocated then
+  begin
+    if foVisible in (ToBeSet + ToBeCleared) then
+      RecalculateFooter;
+    Invalidate(nil);
+    Tree.Invalidate;
+  end;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVTFooter.SetParentFont(Value : Boolean);
+
+begin
+  if FParentFont <> Value then
+  begin
+    FParentFont := Value;
+    if FParentFont then
+    begin
+      FUpdatingFont := True;
+      try
+        FFont.Assign(TBaseVirtualTreeCracker(FOwner).Font);
+      finally
+        FUpdatingFont := False;
+      end;
+    end;
+  end;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+function TVTFooter.IsFontStored : Boolean;
+
+begin
+  Result := not ParentFont;
+end;
+
 
 //----------------- TVirtualTreeColumn ---------------------------------------------------------------------------------
 
@@ -3436,6 +3905,18 @@ end;
 
 //----------------------------------------------------------------------------------------------------------------------
 
+procedure TVirtualTreeColumn.SetFooterText(const Value : string);
+
+begin
+  if FFooterText <> Value then
+  begin
+    FFooterText := Value;
+    Changed(False); // routes through TVirtualTreeColumns.Update, which repaints the footer
+  end;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
 procedure TVirtualTreeColumn.SetWidth(Value : TDimension);
 
 var
@@ -3931,6 +4412,7 @@ begin
     Spacing := TVirtualTreeColumn(Source).Spacing;
     Style := TVirtualTreeColumn(Source).Style;
     Text := TVirtualTreeColumn(Source).Text;
+    FooterText := TVirtualTreeColumn(Source).FooterText;
     Hint := TVirtualTreeColumn(Source).Hint;
     Width := TVirtualTreeColumn(Source).Width;
     Alignment := TVirtualTreeColumn(Source).Alignment;
@@ -4065,6 +4547,15 @@ begin
           CaptionAlignment := TAlignment(Dummy);
         end;
       end;
+
+      // parts introduced with stream version 7
+      if Version > 6 then
+      begin
+        ReadBuffer(Dummy, SizeOf(Dummy));
+        SetLength(S, Dummy);
+        ReadBuffer(PWideChar(S)^, 2 * Dummy);
+        FFooterText := S;
+      end;
     end;
   end;
 end;
@@ -4162,6 +4653,11 @@ begin
       Dummy := Cardinal(FCaptionAlignment);
       WriteBuffer(Dummy, SizeOf(Dummy));
     end;
+
+    // parts introduced with stream version 7
+    Dummy := Length(FFooterText);
+    WriteBuffer(Dummy, SizeOf(Dummy));
+    WriteBuffer(PWideChar(FFooterText)^, 2 * Dummy);
   end;
 end;
 
@@ -4191,6 +4687,9 @@ begin
   FHeaderBitmap := TBitmap.Create;
   FHeaderBitmap.PixelFormat := pf32Bit;
 
+  FFooterBitmap := TBitmap.Create;
+  FFooterBitmap.PixelFormat := pf32Bit;
+
   FHoverIndex := NoColumn;
   FDownIndex := NoColumn;
   FClickIndex := NoColumn;
@@ -4207,6 +4706,7 @@ destructor TVirtualTreeColumns.Destroy;
 begin
   FreeAndNil(FColumnPopupMenu);
   FreeAndNil(FHeaderBitmap);
+  FreeAndNil(FFooterBitmap);
   inherited;
 end;
 
@@ -4862,6 +5362,10 @@ begin
         Invalidate(nil);
         TreeViewControl.Invalidate;
       end;
+
+      // The footer shares the columns' geometry, so any add/remove/resize/visibility change must repaint it too.
+      // Footer.Invalidate self-guards on foVisible and an allocated handle.
+      Self.TreeViewControl.Footer.Invalidate(nil);
 
       if not (Self.TreeViewControl.IsUpdating) then
         // This is mainly to let the designer know when a change occurs at design time which
@@ -5938,6 +6442,307 @@ begin
 
       Run := EndCol;
     end;
+  end;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVirtualTreeColumns.PaintFooter(DC : HDC; R : TRect; HOffset : TDimension);
+
+// Backward compatible footer paint method. Mirrors the header's PaintHeader: it visually moves floating columns
+// according to the horizontal scroll offset and paints fixed columns without offset.
+
+var
+  VisibleFixedWidth : TDimension;
+  RTLOffset         : TDimension;
+  FooterHeight      : TDimension;
+
+  procedure PaintFixedArea;
+
+  begin
+    if VisibleFixedWidth > 0 then
+      PaintFooter(FFooterBitmap.Canvas,
+        Rect(0, 0, Min(R.Right, VisibleFixedWidth), FooterHeight),
+        Point(R.Left, 0), RTLOffset);
+  end;
+
+begin
+  FooterHeight := R.Bottom - R.Top;
+  if FooterHeight <= 0 then
+    Exit;
+
+  // Adjust size of the footer bitmap. Unlike the header the band sits at the bottom of the window, so the bitmap
+  // only spans the footer height and is drawn (and later blitted) with a top of 0.
+  FFooterBitmap.SetSize(Max(TreeViewControl.FooterRect.Right, R.Right - R.Left), FooterHeight);
+
+  VisibleFixedWidth := GetVisibleFixedWidth;
+
+  // Consider right-to-left directionality.
+  if TreeViewControl.UseRightToLeftAlignment then
+    RTLOffset := TreeViewControl.ComputeRTLOffset
+  else
+    RTLOffset := 0;
+
+  if RTLOffset = 0 then
+    PaintFixedArea;
+
+  // Paint the floating part of the footer.
+  PaintFooter(FFooterBitmap.Canvas,
+    Rect(VisibleFixedWidth - HOffset, 0, R.Right + VisibleFixedWidth - HOffset, FooterHeight),
+    Point(R.Left + VisibleFixedWidth, 0), RTLOffset);
+
+  // In case of right-to-left directionality we paint the fixed part last.
+  if RTLOffset <> 0 then
+    PaintFixedArea;
+
+  // Blit the result to target.
+  BitBlt(DC, R.Left, R.Top, R.Right - R.Left, FooterHeight, FFooterBitmap.Canvas.Handle, R.Left, 0, SRCCOPY);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TVirtualTreeColumns.PaintFooter(TargetCanvas : TCanvas; R : TRect; const Target : TPoint;
+  RTLOffset : TDimension = 0);
+
+// Main method to draw the footer band. Paints the slice given in R into TargetCanvas starting at Target.
+// Like the inner PaintHeader it does not move floating columns; it is called twice (fixed + floating) for that.
+
+var
+  Run               : TColumnIndex;
+  EndCol            : TColumnIndex;
+  TargetRect        : TRect;
+  SliceRect         : TRect;
+  MaxX              : TDimension;
+  Footer            : TVTFooter;
+  Images            : TCustomImageList;
+  AdvancedOwnerDraw,
+    OwnerDraw       : Boolean;
+  PaintInfo         : TVTFooterPaintInfo;
+  RequestedElements : TVTFooterPaintElements;
+  Details           : TThemedElementDetails;
+  Theme             : HTHEME;
+
+  //--------------- local functions -------------------------------------------
+
+  function FooterBackColor : TColor;
+
+  // The footer background colour, mapped through the active VCL style (if any) so that a styled footer uses the
+  // style's colour instead of the raw clBtnFace default.
+
+  begin
+    if TreeViewControl.VclStyleEnabled and (seClient in TreeViewControl.StyleElements) then
+      Result := StyleServices.GetSystemColor(Footer.Background)
+    else
+      Result := Footer.Background;
+  end;
+
+  function FooterTextColor(AEnabled : Boolean) : TColor;
+
+  // The footer text colour. Mirrors how the header resolves its font colour (see TVTColors.HeaderFontColor): under an
+  // active VCL style the colour is taken from the themed header element, otherwise the footer font's own colour is
+  // used. Disabled cells use the (also style-aware) disabled colour.
+
+  begin
+    if not AEnabled then
+      Result := TreeViewControl.Colors.DisabledColor
+    else if TreeViewControl.VclStyleEnabled and (seFont in TreeViewControl.StyleElements) then
+    begin
+      if not StyleServices.GetElementColor(StyleServices.GetElementDetails(thHeaderItemNormal), ecTextColor, Result) then
+        Result := Footer.Font.Color;
+    end
+    else
+      Result := Footer.Font.Color;
+  end;
+
+  //---------------------------------------------------------------------------
+
+  procedure DrawFooterCell(AColumn : TColumnIndex; ATargetRect : TRect);
+
+  var
+    Text     : string;
+    TextRect : TRect;
+    Fmt      : TTextFormat;
+    HotColor : Cardinal;
+    LeftPad  : TDimension;
+    Details  : TThemedElementDetails;
+
+  begin
+    PaintInfo.Column := Items[AColumn];
+    PaintInfo.PaintRectangle := ATargetRect;
+    PaintInfo.IsEnabled := (coEnabled in Items[AColumn].Options) and TreeViewControl.Enabled;
+    PaintInfo.IsHoverIndex := (foHotTrack in Footer.Options) and (AColumn = Footer.HoverColumn) and PaintInfo.IsEnabled;
+    PaintInfo.ShowFooterGlyph := (foShowImages in Footer.Options) and Assigned(Images) and (Items[AColumn].ImageIndex > - 1);
+    PaintInfo.ShowRightBorder := foShowButtonBorder in Footer.Options;
+    PaintInfo.GlyphPos := Point(0, 0);
+
+    LeftPad := Items[AColumn].Margin;
+
+    // Position of an (optional) footer glyph. Computed up front so both the application and the text layout can use it.
+    if PaintInfo.ShowFooterGlyph then
+    begin
+      PaintInfo.GlyphPos.X := ATargetRect.Left + LeftPad;
+      PaintInfo.GlyphPos.Y := ATargetRect.Top + Divide(ATargetRect.Bottom - ATargetRect.Top - Images.Height, 2);
+    end;
+
+    // Let the application tell us which elements it wants to draw itself.
+    RequestedElements := [];
+    if AdvancedOwnerDraw then
+      TreeViewControl.DoFooterDrawQueryElements(PaintInfo, RequestedElements);
+
+    // 1) Background (per cell). The whole slice was already filled with the footer background.
+    //    When foShowButtonBorder is set we render the cell exactly like a header button - the themed header item
+    //    (or a 3D edge in Windows classic mode) - so the column separators look identical to the header's instead of
+    //    a hard line. Otherwise the cell stays flat and we only add a hover highlight.
+    if fpeBackground in RequestedElements then
+      TreeViewControl.DoAdvancedFooterDraw(PaintInfo, [fpeBackground])
+    else if PaintInfo.ShowRightBorder then
+    begin
+      if (tsUseThemes in TreeViewControl.TreeStates) or (TreeViewControl.VclStyleEnabled and (seClient in TreeViewControl.StyleElements)) then
+      begin
+        if PaintInfo.IsHoverIndex then
+          Details := StyleServices.GetElementDetails(thHeaderItemHot)
+        else
+          Details := StyleServices.GetElementDetails(thHeaderItemNormal);
+        StyleServices.DrawElement(TargetCanvas.Handle, Details, ATargetRect, @ATargetRect{$IF CompilerVersion >= 34}, TreeViewControl.CurrentPPI{$IFEND});
+      end
+      else // Windows classic mode: a subtle raised edge with a right border, like the header buttons.
+        DrawEdge(TargetCanvas.Handle, ATargetRect, BDR_RAISEDINNER, BF_RIGHT or BF_TOP or BF_BOTTOM or BF_SOFT);
+    end
+    else if PaintInfo.IsHoverIndex then
+    begin
+      HotColor := ColorToRGB(FooterBackColor);
+      HotColor := RGB(Min(255, Integer(GetRValue(HotColor)) + 28), Min(255, Integer(GetGValue(HotColor)) + 28),
+        Min(255, Integer(GetBValue(HotColor)) + 28));
+      TargetCanvas.Brush.Style := bsSolid;
+      TargetCanvas.Brush.Color := HotColor;
+      TargetCanvas.FillRect(ATargetRect);
+    end;
+
+    // 2) Glyph.
+    if fpeFooterGlyph in RequestedElements then
+      TreeViewControl.DoAdvancedFooterDraw(PaintInfo, [fpeFooterGlyph])
+    else if PaintInfo.ShowFooterGlyph and not OwnerDraw then
+      Images.Draw(TargetCanvas, PaintInfo.GlyphPos.X, PaintInfo.GlyphPos.Y, Items[AColumn].ImageIndex, PaintInfo.IsEnabled);
+
+    // 3) Text.
+    TextRect := ATargetRect;
+    Inc(TextRect.Left, LeftPad);
+    Dec(TextRect.Right, LeftPad);
+    if PaintInfo.ShowFooterGlyph then
+      TextRect.Left := PaintInfo.GlyphPos.X + Images.Width + Items[AColumn].Spacing;
+    PaintInfo.TextRectangle := TextRect;
+
+    if fpeText in RequestedElements then
+      TreeViewControl.DoAdvancedFooterDraw(PaintInfo, [fpeText])
+    else if not OwnerDraw then
+    begin
+      Text := '';
+      TreeViewControl.DoGetFooterText(AColumn, Text);
+      if Text <> '' then
+      begin
+        Fmt := [tfSingleLine, tfVerticalCenter, tfEndEllipsis, tfNoPrefix];
+        case Items[AColumn].CaptionAlignment of
+          taCenter :
+            Include(Fmt, tfCenter);
+          taRightJustify :
+            Include(Fmt, tfRight);
+        end;
+        if TreeViewControl.UseRightToLeftAlignment then
+          Include(Fmt, tfRtlReading);
+        TargetCanvas.Font := Footer.Font;
+        TargetCanvas.Font.Color := FooterTextColor(PaintInfo.IsEnabled);
+        TargetCanvas.Brush.Style := bsClear;
+        TargetCanvas.TextRect(TextRect, Text, Fmt);
+        TargetCanvas.Brush.Style := bsSolid;
+      end;
+    end;
+
+    // 4) Whole-cell simple owner draw.
+    if OwnerDraw then
+      TreeViewControl.DoFooterDraw(TargetCanvas, Items[AColumn], ATargetRect, PaintInfo.IsHoverIndex);
+
+    // 5) Overlay (always drawn last, by the application only). The column separator is part of the themed/edged cell
+    //    background drawn in step 1 (so it matches the header), hence there is no separate border step here.
+    if fpeOverlay in RequestedElements then
+      TreeViewControl.DoAdvancedFooterDraw(PaintInfo, [fpeOverlay]);
+  end;
+
+  //--------------- end local function ----------------------------------------
+
+begin
+  if IsRectEmpty(R) then
+    Exit;
+
+  Footer := TreeViewControl.Footer;
+
+  // If both draw possibilities are specified then prefer the advanced way.
+  AdvancedOwnerDraw := (foOwnerDraw in Footer.Options) and Assigned(TreeViewControl.OnAdvancedFooterDraw) and
+    Assigned(TreeViewControl.OnFooterDrawQueryElements) and not (csDesigning in TreeViewControl.ComponentState);
+  OwnerDraw := (foOwnerDraw in Footer.Options) and Assigned(TreeViewControl.OnFooterDraw) and
+    not (csDesigning in TreeViewControl.ComponentState) and not AdvancedOwnerDraw;
+
+  ZeroMemory(@PaintInfo, SizeOf(PaintInfo));
+  PaintInfo.TargetCanvas := TargetCanvas;
+  Images := Footer.Images;
+
+  // Draw the footer background for the whole slice. In themed button mode draw the themed header background across the
+  // entire strip (exactly like the header's DrawBackground), so the area beyond the last column has the same shade as
+  // the cells. Otherwise (flat footer or classic mode) fill flatly with the footer background colour.
+  SliceRect := Rect(Target.X, Target.Y, Target.X + R.Right - R.Left, Target.Y + Footer.Height);
+  if (foShowButtonBorder in Footer.Options) and
+     ((tsUseThemes in TreeViewControl.TreeStates) or (TreeViewControl.VclStyleEnabled and (seClient in TreeViewControl.StyleElements))) then
+  begin
+    if TreeViewControl.VclStyleEnabled and (seClient in TreeViewControl.StyleElements) then
+    begin
+      Details := StyleServices.GetElementDetails(thHeaderItemRightNormal);
+      StyleServices.DrawElement(TargetCanvas.Handle, Details, SliceRect, @SliceRect{$IF CompilerVersion >= 34}, TreeViewControl.CurrentPPI{$IFEND});
+    end
+    else
+    begin
+      Theme := OpenThemeData(TreeViewControl.Handle, 'HEADER');
+      DrawThemeBackground(Theme, TargetCanvas.Handle, HP_HEADERITEM, HIS_NORMAL, SliceRect, nil);
+      CloseThemeData(Theme);
+    end;
+  end
+  else
+  begin
+    TargetCanvas.Brush.Style := bsSolid;
+    TargetCanvas.Brush.Color := FooterBackColor;
+    TargetCanvas.FillRect(SliceRect);
+  end;
+
+  // Now that we have drawn the background, we apply the footer's dimensions to R.
+  R := Rect(Max(R.Left, 0), Max(R.Top, 0), Min(R.Right, TotalWidth), Min(R.Bottom, Footer.Height));
+
+  // Determine where to stop.
+  MaxX := Target.X + R.Right - R.Left + RTLOffset;
+
+  // Determine the start column.
+  Run := ColumnFromPosition(Point(R.Left + RTLOffset, 0), False);
+  if Run <= NoColumn then
+    Exit;
+
+  TargetRect.Top := Target.Y;
+  TargetRect.Bottom := Target.Y + R.Bottom - R.Top;
+  TargetRect.Left := Target.X - R.Left + Items[Run].FLeft + RTLOffset;
+  // TargetRect.Right will be set in the loop
+
+  // Now go for each cell.
+  while (Run > NoColumn) and (TargetRect.Left < MaxX) do
+  begin
+    EndCol := GetNextVisibleColumn(Run);
+    TargetRect.Right := TargetRect.Left + Items[Run].Width;
+
+    // Create a clipping rect to limit painting to the cell area.
+    ClipCanvas(TargetCanvas, Rect(Max(TargetRect.Left, Target.X), Target.Y + R.Top,
+      Min(TargetRect.Right, MaxX), TargetRect.Bottom));
+
+    DrawFooterCell(Run, TargetRect);
+
+    SelectClipRgn(TargetCanvas.Handle, 0);
+
+    TargetRect.Left := TargetRect.Right;
+    Run := EndCol;
   end;
 end;
 

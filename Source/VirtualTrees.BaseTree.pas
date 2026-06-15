@@ -255,6 +255,16 @@ type
     var Elements: THeaderPaintElements) of object;
   TVTAdvancedHeaderPaintEvent = procedure(Sender: TVTHeader; var PaintInfo: THeaderPaintInfo;
     const Elements: THeaderPaintElements) of object;
+  // footer events
+  TVTFooterPaintEvent = procedure(Sender: TVTFooter; FooterCanvas: TCanvas; Column: TVirtualTreeColumn; R: TRect;
+    Hover: Boolean) of object;
+  TVTFooterPaintQueryElementsEvent = procedure(Sender: TVTFooter; var PaintInfo: TVTFooterPaintInfo;
+    var Elements: TVTFooterPaintElements) of object;
+  TVTAdvancedFooterPaintEvent = procedure(Sender: TVTFooter; var PaintInfo: TVTFooterPaintInfo;
+    const Elements: TVTFooterPaintElements) of object;
+  TVTGetFooterTextEvent = procedure(Sender: TVTFooter; Column: TColumnIndex; var Text: string) of object;
+  TVTFooterClickEvent = procedure(Sender: TVTFooter; Column: TColumnIndex; Button: TMouseButton; Shift: TShiftState;
+    X, Y: TDimension) of object;
   TVTBeforeAutoFitColumnsEvent = procedure(Sender: TVTHeader; var SmartAutoFitType: TSmartAutoFitType) of object;
   TVTBeforeAutoFitColumnEvent = procedure(Sender: TVTHeader; Column: TColumnIndex; var SmartAutoFitType: TSmartAutoFitType;
     var Allowed: Boolean) of object;
@@ -415,6 +425,7 @@ type
     FTotalInternalDataSize: Cardinal;            // Cache of the sum of the necessary internal data size for all tree
     FBorderStyle: TBorderStyle;
     FHeader: TVTHeader;
+    FFooter: TVTFooter;
     FRoot: PVirtualNode;
     FDefaultNodeHeight,
     FIndent: TDimension;
@@ -688,6 +699,13 @@ type
                                                  // is set to owner draw mode. But only if OnHeaderDrawQueryElements
                                                  // returns at least one element to be drawn by the application.
                                                  // In this case OnHeaderDraw is not used.
+    FOnGetFooterText: TVTGetFooterTextEvent;     // Used to query the application for the text of a footer cell.
+    FOnFooterClick: TVTFooterClickEvent;         // triggered when a footer cell is clicked
+    FOnFooterDraw: TVTFooterPaintEvent;          // Used when owner draw is enabled for the footer (simple owner draw).
+    FOnFooterDrawQueryElements: TVTFooterPaintQueryElementsEvent; // Used for advanced footer painting to query the
+                                                 // application for the elements it wants to draw itself.
+    FOnAdvancedFooterDraw: TVTAdvancedFooterPaintEvent; // Used for advanced footer owner draw. Only active if
+                                                 // OnFooterDrawQueryElements returns at least one element.
     FOnGetLineStyle: TVTGetLineStyleEvent;       // triggered when a custom line style is used and the pattern brush
                                                  // needs to be build
     FOnPaintBackground: TVTBackgroundPaintEvent; // triggered if a part of the tree's background must be erased which is
@@ -818,6 +836,9 @@ type
     procedure SetFullyVisible(Node: PVirtualNode; Value: Boolean);
     procedure SetHasChildren(Node: PVirtualNode; Value: Boolean);
     procedure SetHeader(const Value: TVTHeader);
+    procedure SetFooter(const Value: TVTFooter);
+    function GetEffectiveFooterHeight: TDimension;
+    function GetFooterRect: TRect;
     procedure SetHotNode(Value: PVirtualNode);
     procedure SetFiltered(Node: PVirtualNode; Value: Boolean);
     procedure SetImages(const Value: TCustomImageList);
@@ -1052,6 +1073,11 @@ type
     procedure DoHeaderDraw(Canvas: TCanvas; Column: TVirtualTreeColumn; R: TRect; Hover, Pressed: Boolean;
       DropMark: TVTDropMarkMode); virtual;
     procedure DoHeaderDrawQueryElements(var PaintInfo: THeaderPaintInfo; var Elements: THeaderPaintElements); virtual;
+    procedure DoAdvancedFooterDraw(var PaintInfo: TVTFooterPaintInfo; const Elements: TVTFooterPaintElements); virtual;
+    procedure DoFooterClick(Column: TColumnIndex; Button: TMouseButton; Shift: TShiftState; X, Y: TDimension); virtual;
+    procedure DoFooterDraw(Canvas: TCanvas; Column: TVirtualTreeColumn; R: TRect; Hover: Boolean); virtual;
+    procedure DoFooterDrawQueryElements(var PaintInfo: TVTFooterPaintInfo; var Elements: TVTFooterPaintElements); virtual;
+    procedure DoGetFooterText(Column: TColumnIndex; var Text: string); virtual;
     procedure DoHeaderMouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: TDimension); virtual;
     procedure DoHeaderMouseMove(Shift: TShiftState; X, Y: TDimension); virtual;
     procedure DoHeaderMouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: TDimension); virtual;
@@ -1119,6 +1145,8 @@ type
     function GetDefaultHintKind: TVTHintKind; virtual;
     function GetDoubleBuffered: Boolean; {$if CompilerVersion >= 36}override;{$ifend}
     function GetHeaderClass: TVTHeaderClass; virtual;
+    function GetFooterClass: TVTFooterClass; virtual;
+    function ContentHeight: TDimension;
     function GetHintWindowClass: THintWindowClass; virtual; abstract;
     procedure GetImageIndex(var Info: TVTPaintInfo; Kind: TVTImageKind; InfoIndex: TVTImageInfoIndex); virtual;
     function GetImageSize(Node: PVirtualNode; Kind: TVTImageKind = TVTImageKind.ikNormal; Column: TColumnIndex = 0; IncludePadding: Boolean = True): TSize; virtual;
@@ -1300,6 +1328,7 @@ type
     property EditDelay: Cardinal read FEditDelay write FEditDelay default 1000;
     property EffectiveOffsetX: TDimension read FEffectiveOffsetX;
     property HeaderRect: TRect read FHeaderRect;
+    property FooterRect: TRect read GetFooterRect;
     property HintMode: TVTHintMode read FHintMode write FHintMode default hmDefault;
     property HintData: TVTHintData read FHintData write FHintData;
     property HotCursor: TCursor read FHotCursor write FHotCursor default crDefault;
@@ -1437,6 +1466,12 @@ type
     property OnHeaderDraw: TVTHeaderPaintEvent read FOnHeaderDraw write FOnHeaderDraw;
     property OnHeaderDrawQueryElements: TVTHeaderPaintQueryElementsEvent read FOnHeaderDrawQueryElements
       write FOnHeaderDrawQueryElements;
+    property OnAdvancedFooterDraw: TVTAdvancedFooterPaintEvent read FOnAdvancedFooterDraw write FOnAdvancedFooterDraw;
+    property OnFooterClick: TVTFooterClickEvent read FOnFooterClick write FOnFooterClick;
+    property OnFooterDraw: TVTFooterPaintEvent read FOnFooterDraw write FOnFooterDraw;
+    property OnFooterDrawQueryElements: TVTFooterPaintQueryElementsEvent read FOnFooterDrawQueryElements
+      write FOnFooterDrawQueryElements;
+    property OnGetFooterText: TVTGetFooterTextEvent read FOnGetFooterText write FOnGetFooterText;
     property OnHeaderHeightTracking: TVTHeaderHeightTrackingEvent read FOnHeaderHeightTracking
       write FOnHeaderHeightTracking;
     property OnHeaderHeightDblClickResize: TVTHeaderHeightDblClickResizeEvent read FOnHeaderHeightDblClickResize
@@ -1762,6 +1797,7 @@ type
     property FullyVisible[Node: PVirtualNode]: Boolean read GetFullyVisible write SetFullyVisible;
     property HasChildren[Node: PVirtualNode]: Boolean read GetHasChildren write SetHasChildren;
     property Header: TVTHeader read FHeader write SetHeader;
+    property Footer: TVTFooter read FFooter write SetFooter;
     property HotNode: PVirtualNode read FCurrentHotNode write SetHotNode;
     property HotColumn: TColumnIndex read FCurrentHotColumn;
     property IsDisabled[Node: PVirtualNode]: Boolean read GetDisabled write SetDisabled;
@@ -1850,6 +1886,7 @@ type
   //These allow us access to protected members in the classes
   TVirtualTreeColumnsCracker = class(TVirtualTreeColumns);
   TVTHeaderCracker = class(TVTHeader);
+  TVTFooterCracker = class(TVTFooter);
   TVirtualTreeColumnCracker = class(TVirtualTreeColumn);												 
   TBaseVirtualTreeCracker = class(TBaseVirtualTree);
 
@@ -2269,6 +2306,7 @@ begin
   FButtonFillMode := fmTreeColor;
 
   FHeader := GetHeaderClass.Create(Self);
+  FFooter := GetFooterClass.Create(Self);
 
   // we have an own double buffer handling
   inherited DoubleBuffered := False;
@@ -2367,6 +2405,8 @@ begin
 
   FHeader.Free;
   FHeader := nil; // Do not use FreeAndNil() before checking issue #497
+  FFooter.Free;
+  FFooter := nil;
   FreeAndNil(FOptions); // WM_NCDESTROY accesses FOptions
 
   FreeMem(FRoot);
@@ -3334,7 +3374,8 @@ end;
 function TBaseVirtualTree.GetBottomNode: PVirtualNode;
 
 begin
-  Result := GetNodeAt(0, ClientHeight - 1);
+  // ContentHeight excludes the footer strip, so the "bottom" node is the last one visible above the footer.
+  Result := GetNodeAt(0, ContentHeight - 1);
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -4611,7 +4652,7 @@ begin
       Run := Run.Parent;
     end;
     R := GetDisplayRect(Node, FHeader.MainColumn, True);
-    DoSetOffsetXY(Point(FOffsetX, FOffsetY + ClientHeight - R.Top - NodeHeight[Node]),
+    DoSetOffsetXY(Point(FOffsetX, FOffsetY + ContentHeight - R.Top - NodeHeight[Node]),
       [suoRepaintScrollBars, suoUpdateNCArea]);
   end;
 end;
@@ -5083,6 +5124,14 @@ procedure TBaseVirtualTree.SetHeader(const Value: TVTHeader);
 
 begin
   FHeader.Assign(Value);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TBaseVirtualTree.SetFooter(const Value: TVTFooter);
+
+begin
+  FFooter.Assign(Value);
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -6369,7 +6418,7 @@ begin
                         // "ColRight - 1", since the right column border is not part of this cell.
                         ( (NodeRect.Right + BottomRightCellContentMargin.X) > Min(ColRight - 1, ClientWidth) ) or
                         (NodeRect.Left < Max(ColLeft, 0)) or
-                        ( (NodeRect.Bottom + BottomRightCellContentMargin.Y) > ClientHeight ) or
+                        ( (NodeRect.Bottom + BottomRightCellContentMargin.Y) > ContentHeight ) or
                         (NodeRect.Top < 0)
                       );
                   end;
@@ -6520,16 +6569,16 @@ begin
     begin
       Result := 1;
       WheelFactor := WheelDelta / WHEEL_DELTA;
-      if (FRangeY > ClientHeight) and (not (ssShift in ShiftState)) then
+      if (FRangeY > ContentHeight) and (not (ssShift in ShiftState)) then
       begin
         // Scroll vertically if there's something to scroll...
         if ssCtrl in ShiftState then
-          ScrollAmount := Trunc(WheelFactor * ClientHeight)
+          ScrollAmount := Trunc(WheelFactor * ContentHeight)
         else
         begin
           SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, @ScrollLines, 0);
           if ScrollLines = WHEEL_PAGESCROLL then
-            ScrollAmount := Trunc(WheelFactor * ClientHeight)
+            ScrollAmount := Trunc(WheelFactor * ContentHeight)
           else
             ScrollAmount := Integer(Trunc(WheelFactor * ScrollLines * FDefaultNodeHeight));
         end;
@@ -7145,7 +7194,7 @@ begin
               end
               else
                 if ssCtrl in Shift then
-                  SetOffsetY(FOffsetY + ClientHeight)
+                  SetOffsetY(FOffsetY + ContentHeight)
                 else
                 begin
                   Offset := 0;
@@ -7154,13 +7203,13 @@ begin
                     Node := GetFirstVisible(nil, True)
                   else
                   begin
-                    // Go up as many nodes as comprise together a size of ClientHeight.
+                    // Go up as many nodes as comprise together a size of ContentHeight.
                     Node := FFocusedNode;
                     while True do
                     begin
                       Temp := GetPreviousVisible(Node, True);
                       NewHeight := NodeHeight[Node];
-                      if (Temp = nil) or (Offset + NewHeight >= ClientHeight) then
+                      if (Temp = nil) or (Offset + NewHeight >= ContentHeight) then
                         Break;
                       Node := Temp;
                       Inc(Offset, NodeHeight[Node]);
@@ -7196,7 +7245,7 @@ begin
               end
               else
                 if ssCtrl in Shift then
-                  SetOffsetY(FOffsetY - ClientHeight)
+                  SetOffsetY(FOffsetY - ContentHeight)
                 else
                 begin
                   Offset := 0;
@@ -7205,13 +7254,13 @@ begin
                     Node := GetLastVisible(nil, True)
                   else
                   begin
-                    // Go up as many nodes as comprise together a size of ClientHeight.
+                    // Go up as many nodes as comprise together a size of ContentHeight.
                     Node := FFocusedNode;
                     while True do
                     begin
                       Temp := GetNextVisible(Node, True);
                       NewHeight := NodeHeight[Node];
-                      if (Temp = nil) or (Offset + NewHeight >= ClientHeight) then
+                      if (Temp = nil) or (Offset + NewHeight >= ContentHeight) then
                         Break;
                       Node := Temp;
                       Inc(Offset, NewHeight);
@@ -7797,7 +7846,7 @@ begin
 
     // Start wheel panning or scrolling if not already active, allowed and scrolling is useful at all.
     if (toWheelPanning in FOptions.MiscOptions) and not (tsPanning in FStates) and
-      ((FRangeX > ClientWidth) or (FRangeY > ClientHeight)) then
+      ((FRangeX > ClientWidth) or (FRangeY > ContentHeight)) then
     begin
       FLastClickPos := SmallPointToPoint(Message.Pos);
       StartWheelPanning(FLastClickPos);
@@ -7851,6 +7900,10 @@ begin
     if hoVisible in FHeader.Options then
       with Message.CalcSize_Params^ do
         Inc(rgrc[0].Top, Height);
+
+  // Note: the footer is NOT reserved here. It lives as a fixed strip at the bottom of the CLIENT area (see
+  // ContentHeight/FooterRect), so the client rect still extends to the very bottom and the native scrollbars sit at
+  // the very bottom edge / classic corner.
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -7972,6 +8025,8 @@ begin
       ReleaseDC(Handle, DC);
     end;
   end;//if header visible
+  // The footer is part of the client area and is painted by Paint() within the client paint cycle (flicker-free and
+  // included in WM_PRINT), so there is nothing to do for it here.
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -7993,6 +8048,11 @@ begin
   // Draw only if the window is visible or visibility is not required.
   if ((Message.Flags and PRF_CHECKVISIBLE) = 0) or IsWindowVisible(Handle) then
     Header.Columns.PaintHeader(Message.DC, FHeaderRect, -FEffectiveOffsetX);
+
+  // The footer is part of the client area now, so it is rendered by the client paint (Paint) which 'inherited'
+  // triggers via WM_PRINTCLIENT. Make sure the whole client (including the footer strip) is considered out of date so
+  // Paint actually draws it.
+  FUpdateRect := ClientRect;
 
   inherited;
 end;
@@ -8296,9 +8356,9 @@ begin
     SB_LINEDOWN:
       SetOffsetY(FOffsetY - FScrollBarOptions.VerticalIncrement);
     SB_PAGEUP:
-      SetOffsetY(FOffsetY + ClientHeight);
+      SetOffsetY(FOffsetY + ContentHeight);
     SB_PAGEDOWN:
-      SetOffsetY(FOffsetY - ClientHeight);
+      SetOffsetY(FOffsetY - ContentHeight);
 
     SB_THUMBPOSITION,
     SB_THUMBTRACK:
@@ -8401,7 +8461,7 @@ var
 
 begin
   ScrollHorizontal := FRangeX > ClientWidth;
-  ScrollVertical := FRangeY > ClientHeight;
+  ScrollVertical := FRangeY > ContentHeight;
 
   if (Abs(X - FLastClickPos.X) < 8) and (Abs(Y - FLastClickPos.Y) < 8) then
   begin
@@ -8765,6 +8825,8 @@ begin
   begin
     // Scale header
     TVTHeaderCracker(FHeader).ChangeScale(M, D);
+    // Scale footer
+    TVTFooterCracker(FFooter).ChangeScale(M, D);
     // Scale utility images, #796
     if FCheckImageKind = ckSystemDefault then begin
       FreeAndNil(FCheckImages);
@@ -8932,7 +8994,7 @@ var
   HeaderWidth: TDimension;
   ScrollBarVisible: Boolean;
 begin
-  ScrollBarVisible := (FRangeY > ClientHeight) and (ScrollBarOptions.ScrollBars in [TScrollStyle.ssVertical, TScrollStyle.ssBoth]);
+  ScrollBarVisible := (FRangeY > ContentHeight) and (ScrollBarOptions.ScrollBars in [TScrollStyle.ssVertical, TScrollStyle.ssBoth]);
   if ScrollBarVisible then
     Result := GetSystemMetrics(SM_CXVSCROLL)
   else
@@ -9652,7 +9714,7 @@ begin
 
       if (Y < FDefaultNodeHeight) and (FOffsetY <> 0) then
         Include(Result, TScrollDirection.sdUp);
-      if (ClientHeight - FOffsetY < FRangeY) and (Y > ClientHeight - FDefaultNodeHeight) then
+      if (ContentHeight - FOffsetY < FRangeY) and (Y > ContentHeight - FDefaultNodeHeight) then
         Include(Result, TScrollDirection.sdDown);
 
       // Since scrolling during dragging is not handled via the timer we do a check here whether the auto
@@ -10731,6 +10793,54 @@ end;
 
 //----------------------------------------------------------------------------------------------------------------------
 
+procedure TBaseVirtualTree.DoAdvancedFooterDraw(var PaintInfo: TVTFooterPaintInfo; const Elements: TVTFooterPaintElements);
+
+begin
+  if Assigned(FOnAdvancedFooterDraw) then
+    FOnAdvancedFooterDraw(FFooter, PaintInfo, Elements);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TBaseVirtualTree.DoFooterClick(Column: TColumnIndex; Button: TMouseButton; Shift: TShiftState; X, Y: TDimension);
+
+begin
+  if Assigned(FOnFooterClick) then
+    FOnFooterClick(FFooter, Column, Button, Shift, X, Y);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TBaseVirtualTree.DoFooterDraw(Canvas: TCanvas; Column: TVirtualTreeColumn; R: TRect; Hover: Boolean);
+
+begin
+  if Assigned(FOnFooterDraw) then
+    FOnFooterDraw(FFooter, Canvas, Column, R, Hover);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TBaseVirtualTree.DoFooterDrawQueryElements(var PaintInfo: TVTFooterPaintInfo; var Elements: TVTFooterPaintElements);
+
+begin
+  if Assigned(FOnFooterDrawQueryElements) then
+    FOnFooterDrawQueryElements(FFooter, PaintInfo, Elements);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TBaseVirtualTree.DoGetFooterText(Column: TColumnIndex; var Text: string);
+
+begin
+  // The column's static FooterText is the default; an assigned OnGetFooterText handler receives it and may override it.
+  if (Column > NoColumn) and (Column < FHeader.Columns.Count) then
+    Text := FHeader.Columns[Column].FooterText;
+  if Assigned(FOnGetFooterText) then
+    FOnGetFooterText(FFooter, Column, Text);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
 procedure TBaseVirtualTree.DoHeaderMouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: TDimension);
 
 begin
@@ -11068,6 +11178,7 @@ var
   I: Integer;
   P: TPoint;
   R: TRect;
+  ScrollClip: TRect;
 
 begin
   // Range check, order is important here.
@@ -11078,8 +11189,10 @@ begin
   DeltaX := Value.X - FOffsetX;
   if UseRightToLeftAlignment then
     DeltaX := -DeltaX;
-  if Value.Y < (ClientHeight - FRangeY) then
-    Value.Y := ClientHeight - FRangeY;
+  // Clamp against ContentHeight (client height minus footer strip) so the last row can be scrolled to sit just above
+  // the footer rather than underneath it.
+  if Value.Y < (ContentHeight - FRangeY) then
+    Value.Y := ContentHeight - FRangeY;
   if Value.Y > 0 then
     Value.Y := 0;
   DeltaY := Value.Y - FOffsetY;
@@ -11121,6 +11234,15 @@ begin
         end
         else
         begin
+          // Exclude the footer strip from scrolling: it is a fixed band at the bottom of the client area and must not
+          // be moved by ScrollWindow (it is repainted separately - see below and in Paint).
+          if Assigned(ClipRect) then
+            ScrollClip := ClipRect^
+          else
+            ScrollClip := ClientRect;
+          if (foVisible in FFooter.Options) and (ScrollClip.Bottom > ContentHeight) then
+            ScrollClip.Bottom := ContentHeight;
+
           if (DeltaX <> 0) and (Header.Columns.GetVisibleFixedWidth > 0) then
           begin
             // When fixed columns exists we have to scroll separately horizontally and vertically.
@@ -11128,13 +11250,15 @@ begin
             // vertically entire client area (or clipping area if one exists).
             R := ClientRect;
             R.Left := Header.Columns.GetVisibleFixedWidth;
+            if (foVisible in FFooter.Options) and (R.Bottom > ContentHeight) then
+              R.Bottom := ContentHeight;
 
             ScrollWindow(Handle, DeltaX, 0, @R, @R);
             if DeltaY <> 0 then
-              ScrollWindow(Handle, 0, DeltaY, ClipRect, ClipRect);
+              ScrollWindow(Handle, 0, DeltaY, @ScrollClip, @ScrollClip);
           end
           else
-            ScrollWindow(Handle, DeltaX, DeltaY, ClipRect, ClipRect);
+            ScrollWindow(Handle, DeltaX, DeltaY, @ScrollClip, @ScrollClip);
         end;
       end;
 
@@ -11145,6 +11269,10 @@ begin
           UpdateHorizontalScrollBar(suoRepaintScrollBars in Options);
           if (suoRepaintHeader in Options) and (hoVisible in FHeader.Options) then
             FHeader.Invalidate(nil);
+          // The footer is deliberately excluded from ScrollWindow (above), so on a horizontal scroll repaint it
+          // explicitly to keep its cells aligned with the columns.
+          if (suoRepaintHeader in Options) and (foVisible in FFooter.Options) then
+            FFooter.Invalidate(nil);
           if not (tsSizing in FStates) and (FScrollBarOptions.ScrollBars in [System.UITypes.TScrollStyle.ssHorizontal, System.UITypes.TScrollStyle.ssBoth]) then
             UpdateVerticalScrollBar(suoRepaintScrollBars in Options);
         end;
@@ -11274,9 +11402,9 @@ begin
         DeltaY := FLastClickPos.Y - ClientP.Y - 8
       else
         if InRect then
-          DeltaY := Min(FScrollBarOptions.VerticalIncrement, ClientHeight)
+          DeltaY := Min(FScrollBarOptions.VerticalIncrement, ContentHeight)
         else
-          DeltaY := Min(FScrollBarOptions.VerticalIncrement, ClientHeight) * Abs(R.Top - P.Y);
+          DeltaY := Min(FScrollBarOptions.VerticalIncrement, ContentHeight) * Abs(R.Top - P.Y);
       if FOffsetY = 0 then
         Exclude(FScrollDirections, sdUp);
     end;
@@ -11287,10 +11415,10 @@ begin
         DeltaY := FLastClickPos.Y - ClientP.Y + 8
       else
         if InRect then
-          DeltaY := -Min(FScrollBarOptions.VerticalIncrement, ClientHeight)
+          DeltaY := -Min(FScrollBarOptions.VerticalIncrement, ContentHeight)
         else
-          DeltaY := -Min(FScrollBarOptions.VerticalIncrement, ClientHeight) * Abs(P.Y - R.Bottom);
-      if (ClientHeight - FOffsetY) = FRangeY then
+          DeltaY := -Min(FScrollBarOptions.VerticalIncrement, ContentHeight) * Abs(P.Y - R.Bottom);
+      if (ContentHeight - FOffsetY) = FRangeY then
         Exclude(FScrollDirections, sdDown);
     end;
 
@@ -11715,14 +11843,14 @@ begin
       // Determine amount to scroll.
       if sdUp in FScrollDirections then
       begin
-        DeltaY := Min(FScrollBarOptions.VerticalIncrement, ClientHeight);
+        DeltaY := Min(FScrollBarOptions.VerticalIncrement, ContentHeight);
         if FOffsetY = 0 then
           Exclude(FScrollDirections, sdUp);
       end;
       if sdDown in FScrollDirections then
       begin
-        DeltaY := -Min(FScrollBarOptions.VerticalIncrement, ClientHeight);
-        if (ClientHeight - FOffsetY) = FRangeY then
+        DeltaY := -Min(FScrollBarOptions.VerticalIncrement, ContentHeight);
+        if (ContentHeight - FOffsetY) = FRangeY then
           Exclude(FScrollDirections, sdDown);
       end;
       if sdLeft in FScrollDirections then
@@ -12143,6 +12271,14 @@ function TBaseVirtualTree.GetHeaderClass: TVTHeaderClass;
 
 begin
   Result := TVTHeader;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+function TBaseVirtualTree.GetFooterClass: TVTFooterClass;
+
+begin
+  Result := TVTFooter;
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -14185,6 +14321,7 @@ var
   Temp: TDimension;
   Options: TVTInternalPaintOptions;
   RTLOffset: TDimension;
+  FooterStrip: TRect;
 
 begin
 
@@ -14204,18 +14341,26 @@ begin
     if Temp = 0 then
     begin
       Window := FUpdateRect;
-      Target := Window.TopLeft;
+      // Keep the body above the footer strip (the footer occupies the bottom of the client area).
+      if Window.Bottom > ContentHeight then
+        Window.Bottom := ContentHeight;
+      if Window.Bottom > Window.Top then
+      begin
+        Target := Window.TopLeft;
 
-      // The clipping rectangle is given in client coordinates of the window. We have to convert it into
-      // a sliding window of the tree image.
-      OffsetRect(Window, FEffectiveOffsetX - RTLOffset, -FOffsetY);
-      PaintTree(Canvas, Window, Target, Options);
+        // The clipping rectangle is given in client coordinates of the window. We have to convert it into
+        // a sliding window of the tree image.
+        OffsetRect(Window, FEffectiveOffsetX - RTLOffset, -FOffsetY);
+        PaintTree(Canvas, Window, Target, Options);
+      end;
     end
     else
     begin
       // First part, fixed columns
       Window := ClientRect;
       Window.Right := Temp;
+      if Window.Bottom > ContentHeight then
+        Window.Bottom := ContentHeight;
       Target := Window.TopLeft;
 
       OffsetRect(Window,  -RTLOffset, -FOffsetY);
@@ -14224,15 +14369,24 @@ begin
       // Second part, other columns
       Window := GetClientRect;
 
-      if Temp > Window.Right then
-        Exit;
+      if Temp <= Window.Right then
+      begin
+        Window.Left := Temp;
+        if Window.Bottom > ContentHeight then
+          Window.Bottom := ContentHeight;
+        Target := Window.TopLeft;
 
-      Window.Left := Temp;
-      Target := Window.TopLeft;
-
-      OffsetRect(Window, FEffectiveOffsetX - RTLOffset, -FOffsetY);
-      PaintTree(Canvas, Window, Target, Options);
+        OffsetRect(Window, FEffectiveOffsetX - RTLOffset, -FOffsetY);
+        PaintTree(Canvas, Window, Target, Options);
+      end;
     end;
+
+    // Paint the footer strip last, as part of the client paint cycle. Doing it here (rather than in WMPaint) keeps it
+    // flicker-free - PaintFooter double-buffers via FFooterBitmap and the body never paints into the strip - and makes
+    // the footer part of the same client paint that WM_PRINT triggers. Only repaint it when the strip actually
+    // intersects the update region, so plain vertical scrolling (which leaves the strip untouched) doesn't redraw it.
+    if (foVisible in FFooter.Options) and IntersectRect(FooterStrip, GetFooterRect, FUpdateRect) then
+      FHeader.Columns.PaintFooter(Canvas.Handle, GetFooterRect, -FEffectiveOffsetX);
   end;
 end;
 
@@ -15282,7 +15436,7 @@ begin
   // Determine correct cursor
   if FRangeX > ClientWidth then
   begin
-    if FRangeY > ClientHeight then
+    if FRangeY > ContentHeight then
       ImageName := TPanningCursor.MOVEALL
     else
       ImageName := TPanningCursor.MOVEEW;
@@ -16073,6 +16227,44 @@ begin
   end
   else
     FHeaderRect.Bottom := FHeaderRect.Top;
+  // The footer is not part of the non-client area; its rectangle is computed on demand in GetFooterRect (client coords).
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+function TBaseVirtualTree.GetEffectiveFooterHeight: TDimension;
+
+// The vertical space the footer strip occupies at the bottom of the client area. Zero when the footer is hidden or the
+// window handle does not exist yet (so no space is reserved).
+
+begin
+  if (foVisible in FFooter.Options) and HandleAllocated then
+    Result := FFooter.Height
+  else
+    Result := 0;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+function TBaseVirtualTree.ContentHeight: TDimension;
+
+// The height of the client area available for node rows: the client height minus the footer strip. All vertical
+// layout / scrolling / painting uses this instead of ClientHeight so that rows never occupy the footer strip and the
+// last row can always be scrolled to sit just above the footer.
+
+begin
+  Result := ClientHeight - GetEffectiveFooterHeight;
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+function TBaseVirtualTree.GetFooterRect: TRect;
+
+// The footer strip in CLIENT coordinates: the bottom EffectiveFooterHeight pixels of the client area, spanning the
+// client width (left of the vertical scrollbar, above the horizontal scrollbar). Empty when the footer is hidden.
+
+begin
+  Result := Rect(0, ContentHeight, ClientWidth, ClientHeight);
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -16239,6 +16431,11 @@ begin
 
     if not Handled and Assigned(FHeader) then
       Handled := TVTHeaderCracker(FHeader).HandleMessage(Message);
+
+    // Give the footer a chance to handle the message (clicks, hot-tracking). It has no drag/track states, so a single
+    // unconditional call is sufficient. The header passes footer-area clicks/moves through (Result stays False).
+    if not Handled and Assigned(FFooter) then
+      Handled := TVTFooterCracker(FFooter).HandleMessage(Message);
 
     if not Handled then
     begin
@@ -16831,7 +17028,7 @@ begin
             Break;
         end;
         R.Top := R.Bottom;
-        if R.Top > ClientHeight then
+        if R.Top > ContentHeight then
           Break;
         Node := GetNextVisibleNoInit(Node, True);
       end;
@@ -19177,7 +19374,11 @@ var
   Dummy: TDimension;
 
 begin
-  Result := GetNodeAt(X, Y, True, Dummy);
+  // A point inside the footer strip (the bottom of the client area) is not over any node.
+  if (foVisible in FFooter.Options) and (Y >= ContentHeight) then
+    Result := nil
+  else
+    Result := GetNodeAt(X, Y, True, Dummy);
 end;
 
 function TBaseVirtualTree.GetNodeAt(const P: TPoint): PVirtualNode;
@@ -20530,11 +20731,11 @@ begin
       if (vsInitialized in Node.States) and IsEffectivelyVisible[Node] then
       begin
         R := GetDisplayRect(Node, NoColumn, False);
-        if R.Top < ClientHeight then
+        if R.Top < ContentHeight then
         begin
           if (toChildrenAbove in FOptions.PaintOptions) and (vsExpanded in Node.States) then
             Dec(R.Top, Node.TotalHeight + NodeHeight[Node]);
-          R.Bottom := ClientHeight;
+          R.Bottom := ContentHeight;
           InvalidateRect(@R, False);
         end;
       end;
@@ -21851,6 +22052,9 @@ begin
         Inc(TreeRect.Bottom, FHeader.Height);
         Inc(P.Y, FHeader.Height);
       end;
+      // Reserve room for the footer at the very bottom of the printed image (below all rows), if it is visible.
+      if foVisible in FFooter.Options then
+        Inc(TreeRect.Bottom, FFooter.Height);
       Image.Height := TreeRect.Bottom - TreeRect.Top;
 
       ImgRect.Left := 0;
@@ -21882,6 +22086,13 @@ begin
       ImgRect.Bottom := Image.Height;
 
       PaintTree(Image.Canvas, ImgRect, P, Options, pf32Bit);
+
+      // Print the footer at the very bottom of the image (below all rows), with no horizontal offset so all columns
+      // are shown. The room for it was reserved in TreeRect/Image.Height above.
+      if foVisible in FFooter.Options then
+        FHeader.Columns.PaintFooter(Image.Canvas.Handle,
+          Rect(0, Image.Height - FFooter.Height, Image.Width, Image.Height), 0);
+
       Color := SaveColor;
 
       // Activate the printer
@@ -22401,19 +22612,19 @@ begin
     if R.Top < 0 then
     begin
       if Center then
-        SetOffsetY(FOffsetY - R.Top + Divide(ClientHeight, 2))
+        SetOffsetY(FOffsetY - R.Top + Divide(ContentHeight, 2))
       else
         SetOffsetY(FOffsetY - R.Top);
     end
     else
-      if (R.Bottom > ClientHeight) or Center then
+      if (R.Bottom > ContentHeight) or Center then
       begin
         HScrollBarVisible := (ScrollBarOptions.ScrollBars in [System.UITypes.TScrollStyle.ssBoth, System.UITypes.TScrollStyle.ssHorizontal]) and
           (ScrollBarOptions.AlwaysVisible or (FRangeX > ClientWidth));
         if Center then
-          SetOffsetY(FOffsetY - R.Bottom + Divide(ClientHeight, 2))
+          SetOffsetY(FOffsetY - R.Bottom + Divide(ContentHeight, 2))
         else
-          SetOffsetY(FOffsetY - R.Bottom + ClientHeight);
+          SetOffsetY(FOffsetY - R.Bottom + ContentHeight);
         // When scrolling up and the horizontal scroll appears because of the operation
         // then we have to move up the node the horizontal scrollbar's height too
         // in order to avoid that the scroll bar hides the node which we wanted to have in view.
@@ -22931,7 +23142,7 @@ begin
               if toChildrenAbove in FOptions.PaintOptions then
               begin
                 PosHoldable := (FOffsetY + (Node.TotalHeight - NodeHeight[Node])) <= 0;
-                NodeInView := R1.Top < ClientHeight;
+                NodeInView := R1.Top < ContentHeight;
 
                 StepsR1 := 0;
                 if NodeInView then
@@ -22949,21 +23160,21 @@ begin
                     // The position cannot be kept. So scroll the node up to its future position.
                     Mode1 := tamScrollUp;
                     R1.Top := Max(0, R1.Top + HeightDelta);
-                    R1.Bottom := ClientHeight;
+                    R1.Bottom := ContentHeight;
                     StepsR1 := FOffsetY - HeightDelta;
                   end;
                 end;
               end
               else
               begin
-                if (FRangeY + FOffsetY - R1.Bottom + HeightDelta >= ClientHeight - R1.Bottom) or
-                   (FRangeY <= ClientHeight) or (FOffsetY = 0) or not
+                if (FRangeY + FOffsetY - R1.Bottom + HeightDelta >= ContentHeight - R1.Bottom) or
+                   (FRangeY <= ContentHeight) or (FOffsetY = 0) or not
                    (toAdvancedAnimatedToggle in FOptions.AnimationOptions) then
                 begin
                   // Do a simple scroll up over the child nodes.
                   Mode1 := tamScrollUp;
                   Inc(R1.Top, NodeHeight[Node]);
-                  R1.Bottom := ClientHeight;
+                  R1.Bottom := ContentHeight;
                   StepsR1 := Min(R1.Bottom - R1.Top + 1, -HeightDelta);
                 end
                 else
@@ -22971,15 +23182,15 @@ begin
                   // Scroll the node down to its future position. As FOffsetY will change we need to invalidate the
                   // whole tree.
                   Mode1 := tamScrollDown;
-                  StepsR1 := Min(-FOffsetY, ClientHeight - FRangeY -FOffsetY - HeightDelta);
+                  StepsR1 := Min(-FOffsetY, ContentHeight - FRangeY -FOffsetY - HeightDelta);
                   R1.Top := 0;
-                  R1.Bottom := Min(ClientHeight, R1.Bottom + Steps);
+                  R1.Bottom := Min(ContentHeight, R1.Bottom + Steps);
                   NeedFullInvalidate := True;
                 end;
               end;
 
               // No animation necessary if the node is below the current client height.
-              if R1.Top < ClientHeight then
+              if R1.Top < ContentHeight then
               begin
                 PrepareAnimation;
                 try
@@ -23039,30 +23250,30 @@ begin
               begin
                 R1 := GetDisplayRect(Node, NoColumn, False);
                 Mode2 := tamNoScroll;
-                TotalFit := HeightDelta + NodeHeight[Node] <= ClientHeight;
+                TotalFit := HeightDelta + NodeHeight[Node] <= ContentHeight;
 
                 if toChildrenAbove in FOptions.PaintOptions then
                 begin
                   // The main goal with toChildrenAbove being set is to keep the nodes visual position so the user does
                   // not get confused. Therefore we need to scroll the view when the expanding is done.
-                  PosHoldable := TotalFit and (FRangeY - ClientHeight >= 0) ;
+                  PosHoldable := TotalFit and (FRangeY - ContentHeight >= 0) ;
                   ChildrenInView := (R1.Top - HeightDelta) >= 0;
-                  NodeInView := R1.Bottom <= ClientHeight;
+                  NodeInView := R1.Bottom <= ContentHeight;
                 end
                 else
                 begin
                   PosHoldable := TotalFit;
-                  ChildrenInView := R1.Bottom + HeightDelta <= ClientHeight;
+                  ChildrenInView := R1.Bottom + HeightDelta <= ContentHeight;
                 end;
 
-                R1.Bottom := ClientHeight;
+                R1.Bottom := ContentHeight;
               end;
             end;
 
             if FUpdateCount = 0 then
             begin
               // Do animated expanding if enabled.
-              if (ToggleData.R1.Top < ClientHeight) and ([tsPainting, tsExpanding] * FStates = []) and
+              if (ToggleData.R1.Top < ContentHeight) and ([tsPainting, tsExpanding] * FStates = []) and
                 (toAnimatedToggle in FOptions.AnimationOptions)then
               begin
                 if tsHint in Self.FStates then
@@ -23093,25 +23304,25 @@ begin
                       begin
                         // If we shall not or cannot scroll to the desired extent we calculate the new position (with
                         // max FOffsetY applied) and animate it that way.
-                        StepsR1 := -FOffsetY - Max(FRangeY + HeightDelta - ClientHeight, 0) + HeightDelta;
-                        if (FRangeY + HeightDelta - ClientHeight) <= 0 then
+                        StepsR1 := -FOffsetY - Max(FRangeY + HeightDelta - ContentHeight, 0) + HeightDelta;
+                        if (FRangeY + HeightDelta - ContentHeight) <= 0 then
                           Mode2 := tamNoScroll
                         else
-                          StepsR2 := Min(FRangeY + HeightDelta - ClientHeight, R2.Bottom);
+                          StepsR2 := Min(FRangeY + HeightDelta - ContentHeight, R2.Bottom);
                       end
                       else
                       begin
-                        if TotalFit and NodeInView and (FRangeY + HeightDelta > ClientHeight) then
+                        if TotalFit and NodeInView and (FRangeY + HeightDelta > ContentHeight) then
                         begin
                           // If the whole subtree will fit into the client area and the node is currently fully visible,
                           // the first child will be made the top node if possible.
                           if HeightDelta >= R1.Top then
                             StepsR1 := Abs(R1.Top - HeightDelta)
                           else
-                            StepsR1 := ClientHeight - FRangeY;
+                            StepsR1 := ContentHeight - FRangeY;
                         end
                         else
-                          if FRangeY + HeightDelta <= ClientHeight then
+                          if FRangeY + HeightDelta <= ContentHeight then
                           begin
                             // We cannot make the first child the top node as we cannot scroll to that extent,
                             // so we do a simple scroll down.
@@ -23121,7 +23332,7 @@ begin
                           else
                             // If the subtree does not fit into the client area at once, the expanded node will
                             // be made the bottom node.
-                            StepsR1 := ClientHeight - R1.Top - NodeHeight[Node];
+                            StepsR1 := ContentHeight - R1.Top - NodeHeight[Node];
 
                         if Mode2 <> tamNoScroll then
                         begin
@@ -23156,14 +23367,14 @@ begin
 
                       R1.Bottom := R1.Top + NodeHeight[Node] + 1;
                       R1.Top := 0;
-                      R2 := Rect(R1.Left, R1.Bottom, R1.Right, ClientHeight);
+                      R2 := Rect(R1.Left, R1.Bottom, R1.Right, ContentHeight);
 
-                      StepsR1 := Min(HeightDelta - (ClientHeight - R2.Top), R1.Bottom - NodeHeight[Node]);
-                      StepsR2 := ClientHeight - R2.Top;
+                      StepsR1 := Min(HeightDelta - (ContentHeight - R2.Top), R1.Bottom - NodeHeight[Node]);
+                      StepsR2 := ContentHeight - R2.Top;
                     end;
                   end;
 
-                  if ClientHeight >= R1.Top then
+                  if ContentHeight >= R1.Top then
                   begin
                     PrepareAnimation;
                     try
@@ -23375,6 +23586,8 @@ begin
   inherited;
   UpdateHeaderRect;
   FHeader.Columns.PaintHeader(Canvas, FHeaderRect, Point(0,0));
+  if foVisible in FFooter.Options then
+    FFooter.Invalidate(nil);
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -23406,14 +23619,16 @@ begin
     ScrollInfo.fMask := SIF_ALL;
     GetScrollInfo(SB_VERT, ScrollInfo);
 
-    if (FRangeY > ClientHeight) or FScrollBarOptions.AlwaysVisible then
+    if (FRangeY > ContentHeight) or FScrollBarOptions.AlwaysVisible then
     begin
       DoShowScrollBar(SB_VERT, True);
 
       ScrollInfo.nMin := 0;
       ScrollInfo.nMax := IfThen(FRangeY < MaxInt, FRangeY, MaxInt); // TScrollInfo values are signed 32bit only
       ScrollInfo.nPos := -FOffsetY;
-      ScrollInfo.nPage := Max(0, ClientHeight + 1);
+      // Use ContentHeight (client height minus the footer strip) so the last row can be scrolled to sit just above
+      // the footer instead of underneath it.
+      ScrollInfo.nPage := Max(0, ContentHeight + 1);
 
       ScrollInfo.fMask := SIF_ALL or ScrollMasks[FScrollBarOptions.AlwaysVisible];
       SetScrollInfo(SB_VERT, ScrollInfo, DoRepaint);
