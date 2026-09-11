@@ -6506,6 +6506,20 @@ var
         Point(R.Left, 0), RTLOffset);
   end;
 
+  //---------------------------------------------------------------------------
+
+  function FooterDividerColor : TColor;
+
+  // The colour of the rule along the footer's top edge, resolved the same way the band colour is resolved in the
+  // inner PaintFooter: through the active VCL style when there is one, raw otherwise.
+
+  begin
+    if TreeViewControl.VclStyleEnabled and (seClient in TreeViewControl.StyleElements) then
+      Result := StyleServices.GetSystemColor(clBtnShadow)
+    else
+      Result := clBtnShadow;
+  end;
+
 begin
   FooterHeight := R.Bottom - R.Top;
   if FooterHeight <= 0 then
@@ -6534,6 +6548,24 @@ begin
   // In case of right-to-left directionality we paint the fixed part last.
   if RTLOffset <> 0 then
     PaintFixedArea;
+
+  // Separate the band from the last data row with a one pixel rule along its top edge. The header gets its separation
+  // from the bottom edge the themed header element draws for it; the footer needs the mirror image of that, and no
+  // themed header element offers a top edge. The rule is deliberately not the header's own edge colour: under a dark
+  // style that edge is the same black as the tree body, so copying it would leave the band separated by nothing but
+  // its own shade, which is the whole reason a rule is drawn here.
+  //
+  // Drawn once, here, rather than in the inner PaintFooter: this is after both the fixed and the floating slice have
+  // been painted, so nothing overpaints it (with foShowButtonBorder set the cells fill their full rectangle, top row
+  // included), it spans the band in one piece, and it is reached even when the tree has no visible columns at all.
+  // Skipped for an owner drawn footer, where the application decides what the band looks like and the rule would
+  // otherwise paint over whatever its fpeOverlay step drew.
+  if not (foOwnerDraw in TreeViewControl.Footer.Options) then
+  begin
+    FFooterBitmap.Canvas.Brush.Style := bsSolid;
+    FFooterBitmap.Canvas.Brush.Color := FooterDividerColor;
+    FFooterBitmap.Canvas.FillRect(Rect(0, 0, FFooterBitmap.Width, 1));
+  end;
 
   // Blit the result to target.
   BitBlt(DC, R.Left, R.Top, R.Right - R.Left, FooterHeight, FFooterBitmap.Canvas.Handle, R.Left, 0, SRCCOPY);
@@ -6629,7 +6661,8 @@ var
     if AdvancedOwnerDraw then
       TreeViewControl.DoFooterDrawQueryElements(PaintInfo, RequestedElements);
 
-    // 1) Background (per cell). The whole slice was already filled with the footer background.
+    // 1) Background (per cell). The whole slice was already filled with the band background - themed when themes or a
+    //    VCL style are active, flat Footer.Background in Windows classic mode.
     //    When foShowButtonBorder is set we render the cell exactly like a header button - the themed header item
     //    (or a 3D edge in Windows classic mode) - so the column separators look identical to the header's instead of
     //    a hard line. Otherwise the cell stays flat and we only add a hover highlight.
@@ -6725,12 +6758,20 @@ begin
   PaintInfo.TargetCanvas := TargetCanvas;
   Images := Footer.Images;
 
-  // Draw the footer background for the whole slice. In themed button mode draw the themed header background across the
-  // entire strip (exactly like the header's DrawBackground), so the area beyond the last column has the same shade as
-  // the cells. Otherwise (flat footer or classic mode) fill flatly with the footer background colour.
+  // Draw the footer background for the whole slice. Whenever themes or a VCL style are active the themed header
+  // background is drawn across the entire strip, exactly as the header's DrawBackground does it, so the band tracks
+  // the active theme and the area beyond the last column has the same shade as the cells. Only in Windows classic
+  // mode - again mirroring the header, whose Header.Background is likewise reached only there - is the band filled
+  // flatly with Footer.Background.
+  //
+  // This deliberately does not depend on foShowButtonBorder. That option selects whether the individual cells are
+  // rendered as header buttons, which is what gives the band its column separators; it says nothing about which
+  // colour the band should be. Tying the two together left a flat footer filled with clBtnFace whatever the theme,
+  // and under a dark style clBtnFace resolves to the very colour the tree body uses, so the band became
+  // indistinguishable from the data rows.
   SliceRect := Rect(Target.X, Target.Y, Target.X + R.Right - R.Left, Target.Y + Footer.Height);
-  if (foShowButtonBorder in Footer.Options) and
-     ((tsUseThemes in TreeViewControl.TreeStates) or (TreeViewControl.VclStyleEnabled and (seClient in TreeViewControl.StyleElements))) then
+  if (tsUseThemes in TreeViewControl.TreeStates) or
+     (TreeViewControl.VclStyleEnabled and (seClient in TreeViewControl.StyleElements)) then
   begin
     if TreeViewControl.VclStyleEnabled and (seClient in TreeViewControl.StyleElements) then
     begin
