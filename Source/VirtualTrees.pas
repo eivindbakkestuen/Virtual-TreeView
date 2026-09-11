@@ -121,6 +121,7 @@ type
   TVTSelectionOption       = VirtualTrees.Types.TVTSelectionOption;
   TVSTTextType             = VirtualTrees.Types.TVSTTextType;
   TVTHintMode              = VirtualTrees.Types.TVTHintMode;
+  TItemEraseAction         = VirtualTrees.Types.TItemEraseAction;
   TBaseVirtualTree         = VirtualTrees.BaseTree.TBaseVirtualTree;
   IVTEditLink              = VirtualTrees.BaseTree.IVTEditLink;
   TVTHeaderNotifyEvent     = VirtualTrees.BaseTree.TVTHeaderNotifyEvent;
@@ -614,7 +615,13 @@ uses
   VirtualTrees.Utils,
   VirtualTrees.Export,
   VirtualTrees.EditLink,
-  VirtualTrees.BaseAncestorVcl{to eliminate H2443 about inline expanding}
+  VirtualTrees.BaseAncestorVcl{to eliminate H2443 about inline expanding},
+  // Issue #873: reference the accessibility unit so its initialization registers the
+  // default MSAA providers. Without this nothing links it in Delphi (only a
+  // C++Builder $HPPEMIT pragma in VirtualTrees.BaseTree does), so screen-reader
+  // support stayed inactive until an application added the unit to a uses clause
+  // itself. Creating the IAccessible objects still happens lazily on WM_GETOBJECT.
+  VirtualTrees.Accessibility
   ;
 
 const
