@@ -1,5 +1,45 @@
 # Virtual-TreeView
 
+> **This is the `branch-footers` branch of [eivindbakkestuen/Virtual-TreeView](https://github.com/eivindbakkestuen/Virtual-TreeView), a fork of [JAM-Software/Virtual-TreeView](https://github.com/JAM-Software/Virtual-TreeView).**
+> It adds a column **footer band** to the tree and fixes the header's `ParentFont` handling; see [What this branch adds](#what-this-branch-adds).
+> Everything else is upstream Virtual Treeview: upstream `master` is merged into this branch regularly, and the fork's own `master` branch is kept identical to upstream `master`.
+> The rest of this file after that section is the upstream README.
+
+## What this branch adds
+
+### Footer band
+
+`Footer` (class `TVTFooter`, published on `TVirtualStringTree` and `TVirtualDrawTree`) is a band at the bottom of the tree that mirrors the header: one cell per column, aligned with the header columns and scrolled horizontally with them. It uses the header's columns for its layout and has no columns of its own. The band takes the bottom of the client area and the rows scroll above it; it follows the active VCL style or Windows theme and has a divider line between it and the data rows (not drawn with `foOwnerDraw`, so owner drawing controls the whole cell).
+
+Footer properties:
+
+- `Options`: `foVisible` (show the footer; off by default), `foShowImages`, `foHotTrack`, `foOwnerDraw`, `foShowButtonBorder` (a separator line on the right edge of each cell).
+- `Height` (default 19, scaled with the tree's DPI), `Background`, `Font` and `ParentFont`, `Images` (with `foShowImages`, each cell shows its column's `ImageIndex` from this list).
+
+Column property:
+
+- `TVirtualTreeColumn.FooterText`: static text for the column's footer cell. It is published, so it can be set in the Object Inspector.
+
+Events (on the tree):
+
+- `OnGetFooterText`: receives the column's `FooterText` and may replace it, for example with a computed total.
+- `OnFooterClick`: a footer cell was clicked.
+- `OnFooterDraw`: simple owner draw of a whole footer cell (needs `foOwnerDraw`).
+- `OnFooterDrawQueryElements` and `OnAdvancedFooterDraw`: advanced owner draw of individual elements (`fpeBackground`, `fpeFooterGlyph`, `fpeText`, `fpeOverlay`), in the same way as the header's advanced draw events (needs `foOwnerDraw`).
+
+`Demos\Footer\FooterDemo.dproj` shows column totals in the footer, switching the footer options at run time, click reporting and an owner-drawn footer cell.
+
+### Header `ParentFont` fix
+
+In upstream Virtual Treeview, changing a property of `Header.Font` (for example `Font.Size` in the Object Inspector) leaves `Header.ParentFont` set, so the changed font is not stored in the DFM and is replaced by the tree's font again. In this branch, changing the header font clears `Header.ParentFont`, the same way `TControl.Font` and `ParentFont` behave. The footer's `Font` and `ParentFont` work the same way.
+
+### Compatibility with upstream
+
+- Forms that set any footer property or event (including a column's `FooterText`) report "property does not exist" errors when loaded with upstream Virtual Treeview.
+- The header stream version is 7 (upstream: 6), because each column's `FooterText` is now saved with the column. Header layouts saved with `Header.SaveToStream` by this branch cannot be read by upstream Virtual Treeview; layouts saved by upstream still load here.
+
+## About Virtual Treeview
+
 Virtual Treeview is a Delphi treeview control built from ground up. Many years of development made it one of the most flexible and advanced tree controls available today. Virtual Treeview starts off with the claim to improve many aspects of existing solutions and introduces some new technologies and principles which were not available before.
 
 ## Help Needed: Any volunteer that takes care about **C++ Builder** bugs and packages?
